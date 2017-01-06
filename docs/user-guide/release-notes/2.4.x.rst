@@ -1,0 +1,18 @@
+2.4 Release Notes
+=================
+
+2.4.0
+-----
+
+Manifest V2 schema version 2 is now supported. It can be normally synced into Pulp from
+docker registry, published and served by Crane.
+Support for manifest V2 schema version 1 did not change.
+
+Manifest model has a new field `config_layer`. Manifest V2 schema version 2 introduces
+a special blob called config which used to be emeedded in earlier schema.
+
+
+Tag model has a new field `schema_version`. Now its unit key is extended to
+(repo_id, tag_name, schema_version) to enable the situation when there is manifest V2
+schema version 1 and manifest V2 schema version 2 having same tag name within a repository.
+

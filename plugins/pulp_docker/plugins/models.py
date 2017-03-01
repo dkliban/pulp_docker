@@ -36,7 +36,7 @@ class Blob(pulp_models.FileContentUnit):
         :return: file name as it appears in a published repository
         :rtype: str
         """
-        return self.digest
+        return '/'.join(('blobs', self.digest))
 
 
 class Image(pulp_models.FileContentUnit):
@@ -219,7 +219,7 @@ class Manifest(pulp_models.FileContentUnit):
         :return: file name as it appears in a published repository
         :rtype: str
         """
-        return '/'.join((str(self.schema_version), self.digest))
+        return '/'.join(('manifests', str(self.schema_version), self.digest))
 
 
 class TagQuerySet(querysets.QuerySetPreventCache):

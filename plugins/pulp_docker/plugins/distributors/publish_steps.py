@@ -411,19 +411,16 @@ class DockerRsyncPublisher(Publisher):
         repo_registry_id = configuration.get_repo_registry_id(self.repo, postdistributor.config)
         remote_repo_path = configuration.get_remote_repo_relative_path(self.repo, self.config)
 
-        unit_info = {constants.IMAGE_TYPE_ID: {'extra_path': [''], 'model': models.Image},
-                     constants.MANIFEST_TYPE_ID: {'extra_path': ['manifests'],
-                                                  'model': models.Manifest},
-                     constants.BLOB_TYPE_ID: {'extra_path': ['blobs'], 'model': models.Blob}}
+        unit_models = {constants.IMAGE_TYPE_ID: models.Image,
+                       constants.MANIFEST_TYPE_ID: models.Manifest,
+                       constants.BLOB_TYPE_ID: models.Blob}
 
         for unit_type in DockerRsyncPublisher.REPO_CONTENT_TYPES:
-            unit_path = unit_info[unit_type]['extra_path']
             gen_step = RSyncFastForwardUnitPublishStep("Unit query step (things)",
-                                                       [unit_info[unit_type]['model']],
+                                                       [unit_models[unit_type]],
                                                        repo=self.repo,
                                                        repo_content_unit_q=date_filter,
-                                                       remote_repo_path=remote_repo_path,
-                                                       published_unit_path=unit_path)
+                                                       remote_repo_path=remote_repo_path)
             self.add_child(gen_step)
 
         self.add_child(PublishTagsForRsyncStep("Generate tags step",

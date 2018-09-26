@@ -1,4 +1,5 @@
 from gettext import gettext as _
+from urllib.parse import urljoin
 import logging
 
 from pulpcore.plugin.models import Artifact, ProgressBar, Repository  # noqa
@@ -63,16 +64,18 @@ class DockerFirstStage(Stage):
             out_q (asyncio.Queue): The out_q to send `DeclarativeContent` objects to
 
         """
-        downloader = self.remote.get_downloader(self.remote.url)
-        result = await downloader.run()
-        # Use ProgressBar to report progress
-        for entry in self.read_my_metadata_file_somehow(result.path):
-            unit = ImageManifest(entry)  # make the content unit in memory-only
-            artifact = Artifact(entry)  # make Artifact in memory-only
-            da = DeclarativeArtifact(artifact, entry.url, entry.relative_path, self.remote)
-            dc = DeclarativeContent(content=unit, d_artifacts=[da])
-            await out_q.put(dc)
+        downloader = self.remote.get_downloader(self.tags_list_url)
+        tags_result = await downloader.run()
         await out_q.put(None)
+
+        # Use ProgressBar to report progress
+        # for entry in self.read_my_metadata_file_somehow(result.path):
+        #     unit = ImageManifest(entry)  # make the content unit in memory-only
+        #     artifact = Artifact(entry)  # make Artifact in memory-only
+        #     da = DeclarativeArtifact(artifact, entry.url, entry.relative_path, self.remote)
+        #     dc = DeclarativeContent(content=unit, d_artifacts=[da])
+        #     await out_q.put(dc)
+        # await out_q.put(None)
 
     def read_my_metadata_file_somehow(self, path):
         """
@@ -82,3 +85,8 @@ class DockerFirstStage(Stage):
             path: Path to the metadata file
         """
         pass
+
+    @property
+    def tags_list_url(self):
+        relative_url = '/v2/{name}/tags/list'.format(name=self.remote.namespaced_upstream_name)
+        return urljoin(self.remote.url, relative_url)

@@ -64,8 +64,14 @@ class DockerFirstStage(Stage):
             out_q (asyncio.Queue): The out_q to send `DeclarativeContent` objects to
 
         """
+        print("stage1")
         downloader = self.remote.get_downloader(self.tags_list_url)
-        tags_result = await downloader.run()
+        print("run stage1")
+        tags_result1 = await downloader.run()
+        print("run stage2")
+        tags_result2 = await downloader.run()
+        print("run stage3")
+        tags_result3 = await downloader.run()
         await out_q.put(None)
 
         # Use ProgressBar to report progress

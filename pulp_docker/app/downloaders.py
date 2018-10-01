@@ -1,11 +1,11 @@
 from gettext import gettext as _
 from logging import getLogger
 from urllib import parse
+import asyncio
 import backoff
 import json
 import re
 
-# TODO(amsacdo) consolidate aiohttp imports
 from aiohttp.client_exceptions import ClientResponseError
 
 from pulpcore.plugin.download import HttpDownloader
@@ -16,11 +16,22 @@ logger = getLogger(__name__)
 
 class TokenAuthHttpDownloader(HttpDownloader):
     """
-    TODO(asmacdo) catch 401
+    TODO(asmacdo)
     """
-    # TODO(asmacdo) backoff?
+
+    def __init__(self, *args, **kwargs):
+        """
+        TODO(asmacdo)
+        """
+        self._auth_header = kwargs.pop('token', None)
+        super().__init__(*args, **kwargs)
+        self.token_lock = asyncio.Lock()
+        self.header_is_current = asyncio.Event()
+        self.header_is_current.set()
+
+    # TODO(asmacdo) backoff
     # @backoff.on_exception(backoff.expo, aiohttp.ClientResponseError, max_tries=10, giveup=giveup)
-    async def run(self, retry=True):
+    async def run(self, handle_401=True):
         """
         Download, validate, and compute digests on the `url`. This is a coroutine.
 
@@ -29,16 +40,19 @@ class TokenAuthHttpDownloader(HttpDownloader):
 
         This method provides the same return object type and documented in
         :meth:`~pulpcore.plugin.download.BaseDownloader.run`.
-        """
-        async with self.session.get(self.url) as response:
 
+        TODO handle_401(bool): If true, catch 401, request a new token and retry.
+        """
+        await self.header_is_current.wait()
+        async with self.session.get(self.url, headers=self.auth_header) as response:
             try:
                 response.raise_for_status()
             except ClientResponseError as e:
-                auth_header = response.headers.get('www-authenticate')
-                if retry and e.status == 401 and auth_header is not None:
-                    await self.update_headers(auth_header)
-                    return await self.run(retry=False)
+                response_auth_header = response.headers.get('www-authenticate')
+                if handle_401 and e.status == 401 and response_auth_header is not None:
+                    if not self.token_lock.locked():
+                        await self.update_token(response_auth_header)
+                    return await self.run(handle_401=False)
                 else:
                     raise
             to_return = await self._handle_response(response)
@@ -48,40 +62,48 @@ class TokenAuthHttpDownloader(HttpDownloader):
             self.session.close()
         return to_return
 
-    async def update_headers(self, auth_header):
-        auth_info = self.parse_401_token_response_headers(auth_header)
-        try:
-            token_url = auth_info.pop('realm')
-        except KeyError:
-            # TODO(asmacdo) is this correct?
-            raise IOError(_("No realm specified for token auth challenge."))
+    async def update_token(self, response_auth_header):
+        """
+        TODO lock
+        """
+        async with self.token_lock:
+            self.header_is_current.clear()
+            bearer_info_string = response_auth_header[len("Bearer "):]
+            bearer_info_list = re.split(',(?=[^=,]+=)', bearer_info_string)
 
-        # Construct a url with query parameters containing token auth challenge info
-        parse_result = parse.urlparse(token_url)
-        query_dict = parse.parse_qs(parse_result.query)
-        query_dict.update(auth_info)
-        url_pieces = list(parse_result)
-        url_pieces[4] = parse.urlencode(query_dict)
-        token_url = parse.urlunparse(url_pieces)
+            # The remaining string consists of comma seperated key=value pairs
+            auth_query_dict = {}
+            for key, value in (item.split('=') for item in bearer_info_list):
+                # The value is a string within a string, ex: '"value"'
+                auth_query_dict[key] = json.loads(value)
+            try:
+                token_base_url = auth_query_dict.pop('realm')
+            except KeyError:
+                raise IOError(_("No realm specified for token auth challenge."))
 
-        new_token = await self.fetch_token(token_url)
-        # TODO(asmacdo) use of private method `_default_headers` is discouraged
-        # `_prepare_headers` is not specifically included in discouraged ATTRS.
-        # https://github.com/aio-libs/aiohttp/blob/master/aiohttp/client.py#L76
-        # Issue: https://github.com/aio-libs/aiohttp/issues/3299
-        self.session._default_headers = self.session._prepare_headers(
-            {'Authorization': 'Bearer %s' % new_token}
-        )
+            # Construct a url with query parameters containing token auth challenge info
+            parsed_url = parse.urlparse(token_base_url)
+            # Add auth query params to query dict and urlencode into a string
+            new_query = parse.urlencode({**parse.parse_qs(parsed_url.query), **auth_query_dict})
+            updated_parsed = parsed_url._replace(query=new_query)
+            token_url = parse.urlunparse(updated_parsed)
 
-    async def fetch_token(self, url):
+            async with self.session.get(token_url, raise_for_status=True) as token_response:
+                token_data = await token_response.text()
 
-        async with self.session.get(url, raise_for_status=True) as token_response:
-            token_data = await token_response.text()
-            import time
-            time.sleep(1)
-        return json.loads(token_data)['token']
+            new_token = json.loads(token_data)['token']
+            self.auth_header = new_token
+            self.header_is_current.set()
 
-    def parse_401_token_response_headers(self, auth_header):
+    @property
+    def auth_header(self):
+        return self._auth_header
+
+    @auth_header.setter
+    def auth_header(self, token):
+        self._auth_header = {'Authorization': 'Bearer {token}'.format(token=token)}
+
+    def parse_401_response_headers(self, auth_header):
         """
         Parse the www-authenticate header from a 401 response into a dictionary that contains
         the information necessary to retrieve a token.

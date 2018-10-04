@@ -1,5 +1,6 @@
 from logging import getLogger
 from types import SimpleNamespace
+import asyncio
 
 from django.db import models
 
@@ -12,6 +13,7 @@ from . import downloaders
 logger = getLogger(__name__)
 
 
+# TODO(asmacdo) s/V1/[V2_S2 | S2]/
 MEDIA_TYPE = SimpleNamespace(
     MANIFEST_V1='application/vnd.docker.distribution.manifest.v1+json',
     MANIFEST_V2='application/vnd.docker.distribution.manifest.v2+json',
@@ -20,6 +22,10 @@ MEDIA_TYPE = SimpleNamespace(
     REGULAR_BLOB='application/vnd.docker.image.rootfs.diff.tar.gzip',
     FOREIGN_BLOB='application/vnd.docker.image.rootfs.foreign.diff.tar.gzip',
 )
+
+
+class NotSchema2Exception(Exception):
+    pass
 
 
 class ImageManifest(Content):
@@ -202,10 +208,38 @@ class DockerRemote(Remote):
 
     Define any additional fields for your new importer if needed.
     """
-
-    TYPE = 'docker'
-
     upstream_name = models.CharField(max_length=255, db_index=True)
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.token = {'token': None}
+        self._token_lock = None
+
+    @property
+    def token_lock(self):
+        if self._token_lock is None:
+            self._token_lock = asyncio.Lock()
+        return self._token_lock
+
+    # class BearerToken:
+    #     """
+    #     A single Bearer Token shared by all Downloaders of the Remote instance.
+    #     """
+    #     def __init__(self):
+    #         self._token = None
+    #
+    #     def invalidate(self):
+    #         self._token = None
+    #
+    #     def __eq__(self, token):
+    #         return self._token == token
+    #
+    #     def __repr__(self):
+    #         return self._token
+    #
+    # @property
+    # def token(self):
+    #     return self._token
 
     @property
     def download_factory(self):
@@ -221,18 +255,21 @@ class DockerRemote(Remote):
             DownloadFactory: The instantiated DownloaderFactory to be used by
                 get_downloader()
         """
-        token_auth_downloaders = {
-            'http': downloaders.TokenAuthHttpDownloader,
-            'https': downloaders.TokenAuthHttpDownloader,
-        }
         try:
             return self._download_factory
         except AttributeError:
             self._download_factory = DownloaderFactory(
                 self,
-                downloader_overrides=token_auth_downloaders
+                downloader_overrides={
+                    'http': downloaders.TokenAuthHttpDownloader,
+                    'https': downloaders.TokenAuthHttpDownloader,
+                }
             )
             return self._download_factory
+
+    def get_downloader(self, url, **kwargs):
+        kwargs['remote'] = self
+        return self.download_factory.build(url, **kwargs)
 
     @property
     def namespaced_upstream_name(self):

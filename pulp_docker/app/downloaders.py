@@ -1,8 +1,8 @@
 from gettext import gettext as _
 from logging import getLogger
 from urllib import parse
-import asyncio
-import backoff
+# TODO(asmacdo) backoff decorator 429s
+# import backoff
 import json
 import re
 
@@ -11,7 +11,7 @@ from aiohttp.client_exceptions import ClientResponseError
 from pulpcore.plugin.download import HttpDownloader
 
 
-logger = getLogger(__name__)
+log = getLogger(__name__)
 
 
 class TokenAuthHttpDownloader(HttpDownloader):
@@ -21,17 +21,17 @@ class TokenAuthHttpDownloader(HttpDownloader):
 
     def __init__(self, *args, **kwargs):
         """
-        TODO(asmacdo)
+        Initialize the downloader.
         """
-        self._auth_header = kwargs.pop('token', None)
+        self.remote = kwargs.pop('remote')
+        # self.token = kwargs.pop("token")
+        # self._token_lock = kwargs.pop("token_lock")
         super().__init__(*args, **kwargs)
-        self.token_lock = asyncio.Lock()
-        self.header_is_current = asyncio.Event()
-        self.header_is_current.set()
+        # self.update_token_lock = asyncio.Lock()
 
     # TODO(asmacdo) backoff
     # @backoff.on_exception(backoff.expo, aiohttp.ClientResponseError, max_tries=10, giveup=giveup)
-    async def run(self, handle_401=True):
+    async def run(self, handle_401=True, extra_data=None):
         """
         Download, validate, and compute digests on the `url`. This is a coroutine.
 
@@ -43,31 +43,45 @@ class TokenAuthHttpDownloader(HttpDownloader):
 
         TODO handle_401(bool): If true, catch 401, request a new token and retry.
         """
-        await self.header_is_current.wait()
-        async with self.session.get(self.url, headers=self.auth_header) as response:
+        headers = {}
+        if extra_data is not None:
+            headers = extra_data.get('headers', headers)
+        this_token = self.remote.token['token']
+        auth_headers = self.auth_header(this_token)
+        headers.update(auth_headers)
+        log.debug("Fetching from URL: {url}".format(url=self.url))
+        async with self.session.get(self.url, headers=headers) as response:
             try:
                 response.raise_for_status()
             except ClientResponseError as e:
                 response_auth_header = response.headers.get('www-authenticate')
+                # Need to retry request
                 if handle_401 and e.status == 401 and response_auth_header is not None:
-                    if not self.token_lock.locked():
-                        await self.update_token(response_auth_header)
+                    # Token has not been updated during request
+                    if self.remote.token['token'] is None or \
+                       self.remote.token['token'] == this_token:
+
+                        self.remote.token['token'] = None
+                        await self.update_token(response_auth_header, this_token)
                     return await self.run(handle_401=False)
                 else:
+                    log.warn("404 from URL: {url}".format(self.url))
                     raise
             to_return = await self._handle_response(response)
             await response.release()
+            self.response_headers = response.headers
 
         if self._close_session_on_finalize:
             self.session.close()
         return to_return
 
-    async def update_token(self, response_auth_header):
+    async def update_token(self, response_auth_header, used_token):
         """
         TODO lock
         """
-        async with self.token_lock:
-            self.header_is_current.clear()
+        async with self.remote.token_lock:
+            if self.remote.token['token'] is not None and self.remote.token['token'] == used_token:
+                return
             bearer_info_string = response_auth_header[len("Bearer "):]
             bearer_info_list = re.split(',(?=[^=,]+=)', bearer_info_string)
 
@@ -91,17 +105,14 @@ class TokenAuthHttpDownloader(HttpDownloader):
             async with self.session.get(token_url, raise_for_status=True) as token_response:
                 token_data = await token_response.text()
 
-            new_token = json.loads(token_data)['token']
-            self.auth_header = new_token
-            self.header_is_current.set()
+            self.remote.token['token'] = json.loads(token_data)['token']
+        # endwith
 
-    @property
-    def auth_header(self):
-        return self._auth_header
-
-    @auth_header.setter
-    def auth_header(self, token):
-        self._auth_header = {'Authorization': 'Bearer {token}'.format(token=token)}
+    @staticmethod
+    def auth_header(token):
+        if token is not None:
+            return {'Authorization': 'Bearer {token}'.format(token=token)}
+        return {}
 
     def parse_401_response_headers(self, auth_header):
         """
@@ -117,6 +128,6 @@ class TokenAuthHttpDownloader(HttpDownloader):
         # The remaining string consists of comma seperated key=value pairs
         auth_dict = {}
         for key, value in (item.split('=') for item in auth_header):
-            # The value is a string within a string, ex: '"value"'
+            # The value is a string within a string, so we need to load as json
             auth_dict[key] = json.loads(value)
         return auth_dict

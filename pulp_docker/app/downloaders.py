@@ -12,6 +12,7 @@ from pulpcore.plugin.download import HttpDownloader
 
 
 log = getLogger(__name__)
+dl_log = getLogger("DOWNLOADER")
 
 
 class TokenAuthHttpDownloader(HttpDownloader):
@@ -49,7 +50,7 @@ class TokenAuthHttpDownloader(HttpDownloader):
         this_token = self.remote.token['token']
         auth_headers = self.auth_header(this_token)
         headers.update(auth_headers)
-        log.debug("Fetching from URL: {url}".format(url=self.url))
+        dl_log.info("Fetching from URL: {url}".format(url=self.url))
         async with self.session.get(self.url, headers=headers) as response:
             try:
                 response.raise_for_status()
@@ -82,6 +83,7 @@ class TokenAuthHttpDownloader(HttpDownloader):
         async with self.remote.token_lock:
             if self.remote.token['token'] is not None and self.remote.token['token'] == used_token:
                 return
+            dl_log.info("Updating Token")
             bearer_info_string = response_auth_header[len("Bearer "):]
             bearer_info_list = re.split(',(?=[^=,]+=)', bearer_info_string)
 
